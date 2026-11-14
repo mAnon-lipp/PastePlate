@@ -13,6 +13,38 @@ async function resolveFinalUrl(rawUrl: string): Promise<string> {
   }
 }
 
+// Helper de secours pour extraire caption + vidéo/images depuis la page embed publique d'Instagram
+async function fetchInstagramEmbedFallback(postUrl: string) {
+  try {
+    const cleanBase = postUrl.replace(/\/$/, '')
+    const html = await $fetch<string>(`${cleanBase}/embed/captioned/`, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'text/html',
+      },
+      responseType: 'text',
+    })
+
+    const videoMatch = html.match(/"video_url":"([^"]+)"/)
+    const videoUrl = videoMatch
+      ? videoMatch[1]!.replace(/\\u0026/g, '&').replace(/\\\//g, '/')
+      : null
+
+    const captionMatch = html.match(/class="Caption"[^>]*>([\s\S]*?)<\/div>/)
+    const caption = captionMatch
+      ? captionMatch[1]!.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      : ''
+
+    const imgMatch = html.match(/class="EmbeddedMediaImage"[^>]*src="([^"]+)"/)
+    const imageUrl = imgMatch ? imgMatch[1]!.replace(/&amp;/g, '&') : null
+
+    return { videoUrl, caption, imageUrl }
+  } catch {
+    return { videoUrl: null, caption: '', imageUrl: null }
+  }
+}
+
 export default defineEventHandler(async (event) => {
   const startTotal = Date.now()
   const config = useRuntimeConfig()
@@ -44,11 +76,12 @@ export default defineEventHandler(async (event) => {
     return { recipe: existing, cached: true }
   }
 
-  // 3. Extraction des métadonnées + sous-titres via Apify
+  // 3. Extraction des métadonnées + sous-titres + médias via Apify
   let caption = ''
   let subtitles = ''
   let thumbnailUrl: string | null = null
   let videoUrl: string | null = null
+  let imageUrls: string[] = []
 
   try {
     console.log(`[APIFY] Extraction ${platform} pour :`, cleanUrl)
@@ -115,19 +148,39 @@ export default defineEventHandler(async (event) => {
         item?.childPosts?.find((c: any) => c.videoUrl)?.videoUrl ||
         null
 
-      if (!videoUrl && item) {
+      if (Array.isArray(item?.images) && item.images.length > 0) {
+        imageUrls = item.images
+      } else if (Array.isArray(item?.childPosts) && item.childPosts.length > 0) {
+        imageUrls = item.childPosts.map((c: any) => c.displayUrl).filter(Boolean)
+      } else if (item?.displayUrl && !videoUrl) {
+        imageUrls = [item.displayUrl]
+      }
+
+      // Fallback sur la page embed publique Instagram si Apify n'a rien renvoyé
+      if (!caption && !videoUrl && imageUrls.length === 0) {
+        console.log('[INSTA FALLBACK] Tentative via la page embed publique...')
+        const embedData = await fetchInstagramEmbedFallback(cleanUrl)
+        if (embedData.caption) caption = embedData.caption
+        if (embedData.videoUrl) videoUrl = embedData.videoUrl
+        if (embedData.imageUrl) {
+          thumbnailUrl = thumbnailUrl || embedData.imageUrl
+          if (!videoUrl) imageUrls = [embedData.imageUrl]
+        }
+      }
+
+      if (!videoUrl && imageUrls.length === 0 && item) {
         console.warn('[APIFY INSTA DEBUG] Clés reçues :', Object.keys(item))
       }
     }
 
     console.log(
-      `[APIFY RÉSULTAT] Caption: ${caption.length}c | Subtitles: ${subtitles.length}c | VideoURL: ${videoUrl ? 'OK' : 'NULL'}`
+      `[APIFY RÉSULTAT] Caption: ${caption.length}c | Subtitles: ${subtitles.length}c | VideoURL: ${videoUrl ? 'OK' : 'NULL'} | Images: ${imageUrls.length}`
     )
   } catch (err: any) {
     console.error('[ERREUR APIFY] :', err?.data || err?.message || err)
     throw createError({
       statusCode: 502,
-      statusMessage: "Impossible de récupérer la vidéo (compte privé, timeout ou lien invalide).",
+      statusMessage: "Impossible de récupérer le post (compte privé, timeout ou lien invalide).",
     })
   }
 
@@ -237,108 +290,166 @@ ${combinedText}
       if (result?.hasRecipe && Array.isArray(result.ingredients) && result.ingredients.length > 0) {
         parsed = result
       } else {
-        console.log('[GEMINI TEXTE] Pas de recette complète dans le texte, bascule vers la vidéo...')
+        console.log('[GEMINI TEXTE] Pas de recette complète dans le texte, bascule vers le média...')
       }
-    } catch (err) {
-      console.warn('[GEMINI TEXTE] Échec analyse texte, tentative via vidéo...')
+    } catch {
+      console.warn('[GEMINI TEXTE] Échec analyse texte, tentative via média...')
     }
   }
 
-  // 4B. TENTATIVE 2 (FALLBACK MULTIMODAL) : Analyse directe de la vidéo + audio
+  // 4B. TENTATIVE 2 (FALLBACK MULTIMODAL) : Vidéo OU Images (carrousel)
   if (!parsed) {
-    console.log('[GEMINI VIDÉO] Téléchargement temporaire du MP4 pour analyse audio/visuelle...')
-    const tempFilePath = join(tmpdir(), `pasteplate_${Date.now()}.mp4`)
-    let uploadedFile: any = null
-
-    try {
-      let directMp4Url = videoUrl
-
-      // Sur TikTok, les URLs brutes renvoient 403 : on récupère un flux MP4 direct sans protection via TikWM
-      if (isTikTok) {
-        try {
-          const tikwm = await $fetch<any>('https://www.tikwm.com/api/', {
-            method: 'POST',
-            body: new URLSearchParams({ url: cleanUrl, hd: '1' }).toString(),
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          })
-          if (tikwm?.data?.play) {
-            directMp4Url = tikwm.data.play
-          }
-        } catch (tikwmErr) {
-          console.warn('[WARN TIKWM] Fallback sur videoUrl Apify :', tikwmErr)
+    // Résolution TikWM si TikTok sans vidéo directe
+    if (isTikTok && !videoUrl) {
+      try {
+        const tikwm = await $fetch<any>('https://www.tikwm.com/api/', {
+          method: 'POST',
+          body: new URLSearchParams({ url: cleanUrl, hd: '1' }).toString(),
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        })
+        if (tikwm?.data?.play) {
+          videoUrl = tikwm.data.play
         }
+      } catch (tikwmErr) {
+        console.warn('[WARN TIKWM] Fallback sur videoUrl Apify :', tikwmErr)
       }
+    }
 
-      if (!directMp4Url) {
-        throw new Error('Aucun lien MP4 exploitable trouvé')
-      }
+    // CAS 1 : On a une vidéo MP4 (TikTok ou Reel/Vidéo Instagram)
+    if (videoUrl) {
+      console.log('[GEMINI VIDÉO] Téléchargement temporaire du MP4 pour analyse audio/visuelle...')
+      const tempFilePath = join(tmpdir(), `pasteplate_${Date.now()}.mp4`)
+      let uploadedFile: any = null
 
-      const videoRes = await fetch(directMp4Url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-      })
+      try {
+        let directMp4Url = videoUrl
+        if (isTikTok) {
+          try {
+            const tikwm = await $fetch<any>('https://www.tikwm.com/api/', {
+              method: 'POST',
+              body: new URLSearchParams({ url: cleanUrl, hd: '1' }).toString(),
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            })
+            if (tikwm?.data?.play) {
+              directMp4Url = tikwm.data.play
+            }
+          } catch {}
+        }
 
-      if (!videoRes.ok) {
-        throw new Error(`Échec téléchargement vidéo (${videoRes.status})`)
-      }
+        const videoRes = await fetch(directMp4Url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+        })
 
-      const arrayBuffer = await videoRes.arrayBuffer()
-      await writeFile(tempFilePath, Buffer.from(arrayBuffer))
+        if (!videoRes.ok) {
+          throw new Error(`Échec téléchargement vidéo (${videoRes.status})`)
+        }
 
-      console.log('[GEMINI VIDÉO] Envoi du fichier à Gemini...')
-      uploadedFile = await ai.files.upload({
-        file: tempFilePath,
-        config: { mimeType: 'video/mp4' },
-      })
+        const arrayBuffer = await videoRes.arrayBuffer()
+        await writeFile(tempFilePath, Buffer.from(arrayBuffer))
 
-      // Attente que Gemini termine l'indexation de la vidéo
-      let fileState = await ai.files.get({ name: uploadedFile.name })
-      let retries = 0
-      while (fileState.state === 'PROCESSING' && retries < 15) {
-        await new Promise((r) => setTimeout(r, 2000))
-        fileState = await ai.files.get({ name: uploadedFile.name })
-        retries++
-      }
+        console.log('[GEMINI VIDÉO] Envoi du fichier à Gemini...')
+        uploadedFile = await ai.files.upload({
+          file: tempFilePath,
+          config: { mimeType: 'video/mp4' },
+        })
 
-      if (fileState.state !== 'ACTIVE') {
-        throw new Error(`Traitement vidéo Gemini incomplet (${fileState.state})`)
-      }
+        // Attente que Gemini termine l'indexation de la vidéo
+        let fileState = await ai.files.get({ name: uploadedFile.name })
+        let retries = 0
+        while (fileState.state === 'PROCESSING' && retries < 15) {
+          await new Promise((r) => setTimeout(r, 2000))
+          fileState = await ai.files.get({ name: uploadedFile.name })
+          retries++
+        }
 
-      console.log('[GEMINI VIDÉO] Analyse audio + visuelle en cours...')
-      const videoPrompt = `Regarde et écoute attentivement cette vidéo de cuisine ${platform} (lis le texte affiché à l'écran ET écoute la voix off).
+        if (fileState.state !== 'ACTIVE') {
+          throw new Error(`Traitement vidéo Gemini incomplet (${fileState.state})`)
+        }
+
+        console.log('[GEMINI VIDÉO] Analyse audio + visuelle en cours...')
+        const videoPrompt = `Regarde et écoute attentivement cette vidéo de cuisine ${platform} (lis le texte affiché à l'écran ET écoute la voix off).
 Extrais la recette complète : titre du plat, temps estimé, portions, liste exacte des ingrédients avec leurs quantités et étapes de préparation.
 Traduis en français si nécessaire et normalise les unités (g, ml, cl, càs, càc, pincée).
 RÈGLE IMPORTANTE SUR LES UNITÉS : Si un ingrédient se compte à l'unité (ex: 2 œufs, 1 oignon), laisse le champ "unit" strictement VIDE (""). N'écris JAMAIS "pièce" ou "unité".
 ${caption ? `Contexte supplémentaire de la légende : "${caption}"` : ''}`
 
-      parsed = await runGeminiWithFallback([
-        {
-          fileData: {
-            fileUri: fileState.uri,
-            mimeType: fileState.mimeType,
+        parsed = await runGeminiWithFallback([
+          {
+            fileData: {
+              fileUri: fileState.uri,
+              mimeType: fileState.mimeType,
+            },
           },
-        },
-        videoPrompt,
-      ])
-    } catch (err: any) {
-      console.error('[ERREUR GEMINI VIDÉO] :', err?.message || err)
-      throw createError({
-        statusCode: 502,
-        statusMessage: `Échec extraction vidéo : ${err?.message || 'erreur inconnue'}`,
-      })
-    } finally {
-      await unlink(tempFilePath).catch(() => {})
-      if (uploadedFile?.name) {
-        await ai.files.delete({ name: uploadedFile.name }).catch(() => {})
+          videoPrompt,
+        ])
+      } catch (err: any) {
+        console.error('[ERREUR GEMINI VIDÉO] :', err?.message || err)
+        throw createError({
+          statusCode: 502,
+          statusMessage: `Échec extraction vidéo : ${err?.message || 'erreur inconnue'}`,
+        })
+      } finally {
+        await unlink(tempFilePath).catch(() => {})
+        if (uploadedFile?.name) {
+          await ai.files.delete({ name: uploadedFile.name }).catch(() => {})
+        }
       }
+    }
+    // CAS 2 : Post photo ou carrousel Instagram (recette écrite sur les images)
+    else if (imageUrls.length > 0) {
+      console.log(`[GEMINI IMAGES] Analyse de ${imageUrls.length} image(s) du post...`)
+      try {
+        const imageParts: any[] = []
+        for (const imgUrl of imageUrls.slice(0, 6)) {
+          const imgRes = await fetch(imgUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            },
+          })
+          if (imgRes.ok) {
+            const buf = Buffer.from(await imgRes.arrayBuffer())
+            imageParts.push({
+              inlineData: {
+                data: buf.toString('base64'),
+                mimeType: imgRes.headers.get('content-type') || 'image/jpeg',
+              },
+            })
+          }
+        }
+
+        if (imageParts.length === 0) {
+          throw new Error('Impossible de télécharger les images du post')
+        }
+
+        const imagePrompt = `Lis attentivement le texte présent sur ces images d'un post culinaire ${platform}.
+Extrais la recette complète : titre du plat, temps estimé, portions, liste exacte des ingrédients avec leurs quantités et étapes de préparation.
+Traduis en français si nécessaire et normalise les unités (g, ml, cl, càs, càc, pincée).
+RÈGLE IMPORTANTE SUR LES UNITÉS : Si un ingrédient se compte à l'unité (ex: 2 œufs, 1 oignon), laisse le champ "unit" strictement VIDE (""). N'écris JAMAIS "pièce" ou "unité".
+${caption ? `Contexte supplémentaire de la légende : "${caption}"` : ''}`
+
+        parsed = await runGeminiWithFallback([...imageParts, imagePrompt])
+      } catch (err: any) {
+        console.error('[ERREUR GEMINI IMAGES] :', err?.message || err)
+        throw createError({
+          statusCode: 502,
+          statusMessage: `Échec extraction images : ${err?.message || 'erreur inconnue'}`,
+        })
+      }
+    } else {
+      throw createError({
+        statusCode: 422,
+        statusMessage:
+          "Instagram a bloqué l'accès à ce post (compte privé, restriction d'âge ou contenu protégé).",
+      })
     }
   }
 
   if (!parsed || !parsed.ingredients?.length) {
     throw createError({
       statusCode: 422,
-      statusMessage: "Aucune recette détectée dans cette vidéo.",
+      statusMessage: 'Aucune recette détectée dans cette publication.',
     })
   }
 
