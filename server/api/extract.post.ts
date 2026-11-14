@@ -7,13 +7,12 @@ import { tmpdir } from 'node:os'
 async function resolveFinalUrl(rawUrl: string): Promise<string> {
   try {
     const res = await fetch(rawUrl, { method: 'HEAD', redirect: 'follow' })
-    const [resolvedUrl] = res.url.split('?')
-    const [fallbackUrl] = rawUrl.split('?')
-    return resolvedUrl || fallbackUrl || rawUrl
+    return res.url.split('?')[0] ?? rawUrl.split('?')[0] ?? rawUrl
   } catch {
     return rawUrl.split('?')[0] ?? rawUrl
   }
 }
+
 export default defineEventHandler(async (event) => {
   const startTotal = Date.now()
   const config = useRuntimeConfig()
@@ -45,8 +44,9 @@ export default defineEventHandler(async (event) => {
     return { recipe: existing, cached: true }
   }
 
-  // 3. Extraction des métadonnées + lien vidéo via Apify
+  // 3. Extraction des métadonnées + sous-titres + lien vidéo via Apify
   let caption = ''
+  let subtitles = ''
   let thumbnailUrl: string | null = null
   let videoUrl: string | null = null
 
@@ -61,19 +61,37 @@ export default defineEventHandler(async (event) => {
           body: {
             postURLs: [cleanUrl],
             resultsPerPage: 1,
-            shouldDownloadVideos: false,
+            shouldDownloadVideos: true,
+            shouldDownloadSubtitles: true,
             shouldDownloadCovers: false,
           },
         }
       )
       const item = apifyRes?.[0]
+      console.log('[APIFY TIKTOK CLÉS DISPONIBLES] :', Object.keys(item || {}))
+
       caption = item?.text || ''
       thumbnailUrl = item?.videoMeta?.coverUrl || null
-      // Récupération du lien MP4 direct renvoyé par TikTok/Apify
+
+      // Récupération des sous-titres/transcription vocale si disponibles
+      if (Array.isArray(item?.videoMeta?.subtitleLinks) && item.videoMeta.subtitleLinks.length > 0) {
+        try {
+          const subUrl =
+            item.videoMeta.subtitleLinks[0].tiktokLink ||
+            item.videoMeta.subtitleLinks[0].downloadLink
+          if (subUrl) {
+            subtitles = await $fetch<string>(subUrl, { responseType: 'text' })
+          }
+        } catch (subErr) {
+          console.warn('[WARN SUBTITLES] Impossible de lire les sous-titres :', subErr)
+        }
+      }
+
+      // Apify stocke l'URL MP4 téléchargée dans mediaUrls[0] ou videoMeta.downloadAddr
       videoUrl =
-        item?.videoMeta?.downloadAddr ||
         item?.mediaUrls?.[0] ||
         item?.videoUrl ||
+        item?.videoMeta?.downloadAddr ||
         null
     } else {
       const apifyRes = await $fetch<any[]>(
@@ -88,10 +106,16 @@ export default defineEventHandler(async (event) => {
         }
       )
       const item = apifyRes?.[0]
+      console.log('[APIFY INSTA CLÉS DISPONIBLES] :', Object.keys(item || {}))
+
       caption = item?.caption || ''
       thumbnailUrl = item?.displayUrl || null
-      videoUrl = item?.videoUrl || null
+      videoUrl = item?.videoUrl || item?.videoPlaybackUrl || null
     }
+
+    console.log(
+      `[APIFY RÉSULTAT] Caption: ${caption.length}c | Subtitles: ${subtitles.length}c | VideoURL: ${videoUrl ? 'OK' : 'NULL'}`
+    )
   } catch (err: any) {
     console.error('[ERREUR APIFY] :', err?.data || err?.message || err)
     throw createError({
@@ -186,26 +210,27 @@ export default defineEventHandler(async (event) => {
   }
 
   let parsed: any = null
+  const combinedText = [caption, subtitles].filter(Boolean).join('\n\n--- Transcription audio ---\n')
 
-  // 4A. TENTATIVE 1 : Analyse de la description texte (si assez longue)
-  if (caption && caption.trim().length >= 30) {
-    console.log('[GEMINI TEXTE] Analyse de la description...')
-    const textPrompt = `Extrais la recette de cuisine contenue dans cette description de post ${platform}.
-Ignore tous les hashtags, appels à l'action et emojis.
+  // 4A. TENTATIVE 1 : Analyse de la description texte + sous-titres automatiques
+  if (combinedText.trim().length >= 30) {
+    console.log('[GEMINI TEXTE] Analyse de la description et des sous-titres...')
+    const textPrompt = `Extrais la recette de cuisine contenue dans ces informations de post ${platform}.
+Ignore tous les hashtags, timecodes WebVTT (00:00.000 --> ...), appels à l'action et emojis.
 Traduis en français si nécessaire et normalise les unités (g, ml, cl, càs, càc, pincée).
 RÈGLE IMPORTANTE SUR LES UNITÉS : Si un ingrédient se compte à l'unité (ex: 2 œufs, 1 oignon), laisse le champ "unit" strictement VIDE (""). N'écris JAMAIS "pièce" ou "unité".
 Si le texte ne contient PAS la recette (ex: "la recette est dans la vidéo"), mets "hasRecipe": false.
 
 Texte brut :
 """
-${caption}
+${combinedText}
 """`
     try {
       const result = await runGeminiWithFallback(textPrompt)
       if (result?.hasRecipe && Array.isArray(result.ingredients) && result.ingredients.length > 0) {
         parsed = result
       } else {
-        console.log('[GEMINI TEXTE] Pas de recette trouvée dans la légende, bascule vers la vidéo...')
+        console.log('[GEMINI TEXTE] Pas de recette complète dans le texte, bascule vers la vidéo...')
       }
     } catch (err) {
       console.warn('[GEMINI TEXTE] Échec analyse texte, tentative via vidéo...')
@@ -226,7 +251,6 @@ ${caption}
     let uploadedFile: any = null
 
     try {
-      // Téléchargement du flux vidéo vers /tmp
       const videoRes = await fetch(videoUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -241,11 +265,12 @@ ${caption}
       const arrayBuffer = await videoRes.arrayBuffer()
       await writeFile(tempFilePath, Buffer.from(arrayBuffer))
 
-      // Upload vers la File API de Gemini
       console.log('[GEMINI VIDÉO] Envoi du fichier à Gemini...')
       uploadedFile = await ai.files.upload({
         file: tempFilePath,
-        config: { mimeType: 'video/mp4' },
+        config: {
+          mimeType: 'video/mp4',
+        },
       })
 
       // Attente que Gemini termine l'indexation de la vidéo
@@ -284,7 +309,6 @@ ${caption ? `Contexte supplémentaire de la légende : "${caption}"` : ''}`
         statusMessage: "Impossible d'extraire la recette depuis la vidéo (flux protégé ou trop lourd).",
       })
     } finally {
-      // Nettoyage systématique du fichier local /tmp et du fichier distant chez Gemini
       await unlink(tempFilePath).catch(() => {})
       if (uploadedFile?.name) {
         await ai.files.delete({ name: uploadedFile.name }).catch(() => {})
