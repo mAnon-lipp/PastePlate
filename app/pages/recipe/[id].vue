@@ -71,6 +71,7 @@ const groupedIngredients = computed(() => {
 
 // --- 2. MODE CUISINE (Screen Wake Lock) ---
 const cookingMode = ref(false)
+const cookingStepIndex = ref(0)
 let wakeLockSentinel: any = null
 
 async function requestWakeLock() {
@@ -92,10 +93,20 @@ async function releaseWakeLock() {
 async function toggleCookingMode() {
   cookingMode.value = !cookingMode.value
   if (cookingMode.value) {
+    cookingStepIndex.value = 0
     await requestWakeLock()
   } else {
     await releaseWakeLock()
   }
+}
+
+function previousCookingStep() {
+  cookingStepIndex.value = Math.max(0, cookingStepIndex.value - 1)
+}
+
+function nextCookingStep() {
+  const stepsCount = recipe.value?.steps?.length || 1
+  cookingStepIndex.value = Math.min(stepsCount - 1, cookingStepIndex.value + 1)
 }
 
 function handleVisibilityChange() {
@@ -215,20 +226,23 @@ async function handleDelete() {
 
 <template>
   <main
-    :class="cookingMode ? 'max-w-2xl py-4' : 'max-w-xl py-6'"
-    class="mx-auto px-4 pb-24 transition-all"
+    :class="cookingMode ? 'min-h-screen max-w-none bg-dark-canvas text-canvas py-5' : 'max-w-3xl bg-accent-strong/90 py-8'"
+    class="mx-auto min-h-screen px-5 pb-10 transition-all sm:px-8"
   >
-    <!-- Barre de navigation supérieure -->
-    <div class="flex items-center justify-between gap-2 mb-6">
-      <NuxtLink to="/" class="inline-flex items-center text-sm text-neutral-400 hover:text-white">
-        ← Retour
+    <div class="relative mb-8 flex items-center justify-between gap-3">
+      <NuxtLink
+        to="/"
+        class="flex h-14 w-14 items-center justify-center rounded-full bg-surface text-4xl leading-none text-ink transition hover:scale-105"
+        aria-label="Retour à la bibliothèque"
+      >
+        ‹
       </NuxtLink>
 
       <div v-if="recipe && !isEditing" class="flex items-center gap-2">
         <button
           type="button"
           @click="startEditing"
-          class="px-3 py-2 rounded-xl text-xs font-medium bg-neutral-900 text-neutral-300 border border-neutral-800 hover:border-neutral-700 transition"
+          class="rounded-full bg-surface px-7 py-4 text-base font-medium text-ink transition hover:bg-white"
         >
           Modifier
         </button>
@@ -238,21 +252,17 @@ async function handleDelete() {
           @click="toggleCookingMode"
           :class="
             cookingMode
-              ? 'bg-emerald-500 text-neutral-950 font-bold shadow-lg shadow-emerald-500/20'
-              : 'bg-neutral-900 text-neutral-200 border border-neutral-800 hover:border-neutral-700'
+              ? 'bg-accent text-ink font-bold'
+              : 'bg-surface text-ink hover:bg-white'
           "
-          class="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium transition"
+          class="hidden rounded-full px-5 py-3 text-sm font-medium transition sm:inline-flex"
         >
-          <span
-            :class="cookingMode ? 'bg-neutral-950 animate-pulse' : 'bg-emerald-500'"
-            class="w-2 h-2 rounded-full"
-          />
-          {{ cookingMode ? 'Mode Cuisine actif' : 'Mode Cuisine' }}
+          {{ cookingMode ? 'Quitter' : 'Mode cuisine' }}
         </button>
       </div>
     </div>
 
-    <div v-if="error || !recipe" class="text-red-400">
+    <div v-if="error || !recipe" class="rounded-3xl bg-surface p-8 text-center text-danger">
       Recette introuvable.
     </div>
 
@@ -263,41 +273,41 @@ async function handleDelete() {
         <button
           type="button"
           @click="isEditing = false"
-          class="text-xs text-neutral-400 hover:text-white"
+          class="text-xs text-muted hover:text-surface"
         >
           Annuler
         </button>
       </div>
 
       <!-- Infos générales -->
-      <div class="space-y-3 bg-neutral-900/70 border border-neutral-800 rounded-2xl p-4">
+      <div class="space-y-3 rounded-2xl border border-dark-border bg-dark-surface/70 p-4">
         <div>
-          <label class="block text-xs text-neutral-400 mb-1">Titre du plat</label>
+          <label class="mb-1 block text-xs text-muted">Titre du plat</label>
           <input
             v-model="editForm.title"
             type="text"
             required
-            class="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+            class="field-control w-full"
           />
         </div>
 
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs text-neutral-400 mb-1">Temps de préparation</label>
+            <label class="mb-1 block text-xs text-muted">Temps de préparation</label>
             <input
               v-model="editForm.prepTime"
               type="text"
               placeholder="ex: 25 min"
-              class="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+              class="field-control w-full"
             />
           </div>
           <div>
-            <label class="block text-xs text-neutral-400 mb-1">Portions de base</label>
+            <label class="mb-1 block text-xs text-muted">Portions de base</label>
             <input
               v-model.number="editForm.servings"
               type="number"
               min="1"
-              class="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+              class="field-control w-full"
             />
           </div>
         </div>
@@ -306,11 +316,11 @@ async function handleDelete() {
       <!-- Édition des ingrédients -->
       <div class="space-y-3">
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-semibold uppercase tracking-wider text-neutral-400">Ingrédients</h2>
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-muted">Ingrédients</h2>
           <button
             type="button"
             @click="addIngredient"
-            class="text-xs text-emerald-400 hover:underline font-medium"
+            class="text-xs font-medium text-accent hover:underline"
           >
             + Ajouter un ingrédient
           </button>
@@ -319,31 +329,31 @@ async function handleDelete() {
         <div
           v-for="(ing, idx) in editForm.ingredients"
           :key="idx"
-          class="bg-neutral-900/70 border border-neutral-800 rounded-xl p-3 space-y-2"
+          class="space-y-2 rounded-xl border border-dark-border bg-dark-surface/70 p-3"
         >
           <div class="flex gap-2">
             <input
               v-model="ing.quantity"
               type="text"
               placeholder="Qté"
-              class="w-16 bg-neutral-950 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-emerald-500"
+              class="field-control w-16 rounded-lg px-2.5 py-1.5 text-xs"
             />
             <input
               v-model="ing.unit"
               type="text"
               placeholder="Unité"
-              class="w-16 bg-neutral-950 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-emerald-500"
+              class="field-control w-16 rounded-lg px-2.5 py-1.5 text-xs"
             />
             <input
               v-model="ing.name"
               type="text"
               placeholder="Nom de l'ingrédient"
-              class="flex-1 bg-neutral-950 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-emerald-500"
+              class="field-control flex-1 rounded-lg px-2.5 py-1.5 text-xs"
             />
             <button
               type="button"
               @click="removeIngredient(idx)"
-              class="text-neutral-500 hover:text-red-400 px-1.5 text-sm"
+              class="px-1.5 text-sm text-muted hover:text-danger"
               title="Supprimer"
             >
               ✕
@@ -352,7 +362,7 @@ async function handleDelete() {
 
           <select
             v-model="ing.category"
-            class="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-2.5 py-1.5 text-xs text-neutral-300 focus:outline-none focus:border-emerald-500"
+            class="field-control w-full rounded-lg px-2.5 py-1.5 text-xs"
           >
             <option v-for="cat in categoriesList" :key="cat" :value="cat">
               {{ cat }}
@@ -364,11 +374,11 @@ async function handleDelete() {
       <!-- Édition des étapes -->
       <div class="space-y-3">
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-semibold uppercase tracking-wider text-neutral-400">Étapes</h2>
+          <h2 class="text-sm font-semibold uppercase tracking-wider text-muted">Étapes</h2>
           <button
             type="button"
             @click="addStep"
-            class="text-xs text-emerald-400 hover:underline font-medium"
+            class="text-xs font-medium text-accent hover:underline"
           >
             + Ajouter une étape
           </button>
@@ -379,16 +389,16 @@ async function handleDelete() {
           :key="idx"
           class="flex gap-2 items-start"
         >
-          <span class="text-xs font-bold text-neutral-500 mt-2.5 w-5">{{ idx + 1 }}.</span>
+          <span class="mt-2.5 w-5 text-xs font-bold text-muted">{{ idx + 1 }}.</span>
           <textarea
             v-model="editForm.steps[idx]"
             rows="2"
-            class="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl p-2.5 text-xs leading-relaxed focus:outline-none focus:border-emerald-500"
+            class="field-control flex-1 rounded-xl p-2.5 text-xs leading-relaxed"
           />
           <button
             type="button"
             @click="removeStep(idx)"
-            class="text-neutral-500 hover:text-red-400 px-1.5 mt-2 text-sm"
+            class="mt-2 px-1.5 text-sm text-muted hover:text-danger"
           >
             ✕
           </button>
@@ -396,12 +406,12 @@ async function handleDelete() {
       </div>
 
       <!-- Boutons d'action -->
-      <div class="flex items-center justify-between pt-4 border-t border-neutral-800">
+      <div class="flex items-center justify-between border-t border-dark-border pt-4">
         <button
           type="button"
           @click="handleDelete"
           :disabled="deleting"
-          class="px-4 py-2.5 rounded-xl text-xs font-semibold bg-red-950/60 text-red-400 border border-red-900/80 hover:bg-red-900/60 transition"
+          class="rounded-xl border border-danger/50 bg-danger/10 px-4 py-2.5 text-xs font-semibold text-danger transition hover:bg-danger/20"
         >
           {{ deleting ? 'Suppression...' : confirmDelete ? 'Confirmer la suppression ?' : 'Supprimer la recette' }}
         </button>
@@ -409,7 +419,7 @@ async function handleDelete() {
         <button
           type="submit"
           :disabled="saving"
-          class="px-5 py-2.5 rounded-xl text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-neutral-950 transition disabled:opacity-50"
+          class="rounded-xl bg-accent px-5 py-2.5 text-xs font-semibold text-ink transition hover:bg-accent/85 disabled:opacity-50"
         >
           {{ saving ? 'Enregistrement...' : 'Enregistrer' }}
         </button>
@@ -418,39 +428,44 @@ async function handleDelete() {
 
     <!-- MODE LECTURE -->
     <article v-else>
-      <div class="mb-6">
-        <div class="flex items-center gap-2 text-xs text-neutral-400 mb-2">
-          <span class="uppercase font-bold px-2 py-0.5 rounded bg-neutral-800 text-neutral-200">
-            {{ recipe.platform }}
-          </span>
-          <span v-if="recipe.prepTime">• {{ recipe.prepTime }}</span>
+      <div class="mb-8">
+        <div v-if="!cookingMode" class="mb-4 flex items-center gap-3 text-base text-canvas">
+          <a
+            :href="recipe.sourceUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="rounded-full bg-ink px-5 py-3 font-medium text-canvas transition hover:bg-ink/85"
+          >
+            Voir sur {{ recipe.platform }}
+          </a>
+          <span v-if="recipe.prepTime" class="text-muted">{{ recipe.prepTime }}</span>
         </div>
 
+        <div v-else class="flex items-center justify-between text-accent-soft">
+          <button type="button" @click="toggleCookingMode" class="rounded-full bg-dark-surface px-6 py-4 font-medium">
+            Quitter
+          </button>
+          <span class="text-base">Écran toujours allumé</span>
+        </div>
+
+        <p v-if="cookingMode" class="mt-10 text-lg font-bold uppercase tracking-wider text-accent-soft">
+          Étape {{ cookingStepIndex + 1 }} sur {{ recipe.steps?.length || 1 }}
+        </p>
         <h1
-          :class="cookingMode ? 'text-3xl' : 'text-2xl'"
-          class="font-bold leading-snug mb-3 transition-all"
+          :class="cookingMode ? 'mt-10 text-5xl text-canvas sm:text-6xl' : 'text-5xl text-ink sm:text-6xl'"
+          class="font-serif font-bold leading-[0.98] transition-all"
         >
           {{ recipe.title }}
         </h1>
-
-        <a
-          v-if="!cookingMode"
-          :href="recipe.sourceUrl"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="text-xs text-emerald-400 hover:underline"
-        >
-          Voir la vidéo originale ↗
-        </a>
       </div>
 
       <!-- Sélecteur de portions -->
-      <div class="flex items-center justify-between bg-neutral-900 border border-neutral-800 rounded-2xl px-4 py-3 mb-6">
+      <div v-if="!cookingMode" class="mb-8 flex items-center justify-between rounded-3xl bg-surface px-6 py-5">
         <div>
-          <span class="text-sm font-medium text-neutral-200">Portions</span>
+          <span class="text-lg font-medium text-ink">Portions</span>
           <span
             v-if="currentServings !== (recipe.servings || 2)"
-            class="block text-[11px] text-emerald-400"
+            class="block text-[11px] text-accent"
           >
             Quantités ajustées (base : {{ recipe.servings || 2 }})
           </span>
@@ -461,17 +476,17 @@ async function handleDelete() {
             type="button"
             @click="currentServings = Math.max(1, currentServings - 1)"
             :disabled="currentServings <= 1"
-            class="w-9 h-9 rounded-xl bg-neutral-800 hover:bg-neutral-700 flex items-center justify-center text-lg font-bold disabled:opacity-30 transition"
+            class="flex h-12 w-12 items-center justify-center rounded-full bg-accent-soft/45 text-2xl font-bold text-ink transition hover:bg-border disabled:opacity-30"
           >
             −
           </button>
-          <span class="w-8 text-center font-bold text-base tabular-nums">
+          <span class="w-8 text-center text-2xl font-bold tabular-nums text-ink">
             {{ currentServings }}
           </span>
           <button
             type="button"
             @click="currentServings++"
-            class="w-9 h-9 rounded-xl bg-neutral-800 hover:bg-neutral-700 flex items-center justify-center text-lg font-bold transition"
+            class="flex h-12 w-12 items-center justify-center rounded-full bg-accent-soft/45 text-2xl font-bold text-ink transition hover:bg-border"
           >
             +
           </button>
@@ -480,17 +495,23 @@ async function handleDelete() {
 
       <!-- Ingrédients triés par catégorie -->
       <section class="mb-8">
-        <h2 :class="cookingMode ? 'text-xl' : 'text-lg'" class="font-semibold mb-4">
+        <div v-if="cookingMode" class="mb-8 h-4 overflow-hidden rounded-full bg-dark-surface">
+          <div
+            class="h-full rounded-full bg-accent transition-all"
+            :style="{ width: `${((cookingStepIndex + 1) / (recipe.steps?.length || 1)) * 100}%` }"
+          />
+        </div>
+        <h2 v-if="!cookingMode" class="mb-4 text-2xl font-bold text-ink">
           Ingrédients
         </h2>
 
-        <div class="space-y-4">
+        <div v-if="!cookingMode" class="space-y-4">
           <div
             v-for="(items, category) in groupedIngredients"
             :key="category"
-            class="bg-neutral-900/70 border border-neutral-800 rounded-2xl p-4"
+            class="rounded-3xl bg-accent-soft/35 p-5"
           >
-            <h3 class="text-xs font-bold uppercase tracking-wider text-emerald-400 mb-3">
+            <h3 class="mb-3 text-sm font-bold uppercase tracking-wider text-muted">
               {{ category }}
             </h3>
 
@@ -499,20 +520,20 @@ async function handleDelete() {
                 v-for="{ item, index } in items"
                 :key="index"
                 @click="checkedIngredients[index] = !checkedIngredients[index]"
-                class="flex items-center gap-3 cursor-pointer select-none"
+                class="flex cursor-pointer select-none items-center gap-3 border-b border-border py-3"
               >
                 <input
                   type="checkbox"
                   :checked="!!checkedIngredients[index]"
-                  class="w-5 h-5 rounded accent-emerald-500 pointer-events-none shrink-0"
+                  class="pointer-events-none h-6 w-6 shrink-0 rounded accent-accent-strong"
                 />
                 <span
                   :class="[
-                    checkedIngredients[index] ? 'line-through text-neutral-500' : 'text-neutral-200',
-                    cookingMode ? 'text-base' : 'text-sm',
+                    checkedIngredients[index] ? 'line-through text-muted/70' : 'text-ink',
+                    'text-base',
                   ]"
                 >
-                  <strong v-if="item.quantity" class="font-semibold text-white">
+                  <strong v-if="item.quantity" class="font-semibold text-ink">
                     {{ formatScaledQuantity(item.quantity) }}<template v-if="cleanUnit(item.unit)"> {{ cleanUnit(item.unit) }}</template>
                   </strong>
                   {{ item.name }}
@@ -524,10 +545,12 @@ async function handleDelete() {
       </section>
 
       <!-- Étapes -->
-      <section>
-        <h2 :class="cookingMode ? 'text-xl' : 'text-lg'" class="font-semibold mb-4">
-          Préparation
-        </h2>
+      <section :class="cookingMode ? 'mt-8' : ''">
+        <h2 v-if="!cookingMode" class="mb-4 text-2xl font-bold text-ink">Préparation</h2>
+        <div v-if="cookingMode && recipe.steps?.length" class="rounded-3xl bg-dark-surface p-6 text-canvas">
+          <p class="mb-3 text-lg font-bold uppercase tracking-wider text-accent-soft">Pour cette étape</p>
+          <p class="text-2xl">{{ recipe.steps[cookingStepIndex] }}</p>
+        </div>
 
         <ol class="space-y-3.5">
           <li
@@ -536,24 +559,51 @@ async function handleDelete() {
             @click="checkedSteps[Number(idx)] = !checkedSteps[Number(idx)]"
             :class="[
               checkedSteps[Number(idx)] ? 'opacity-35' : '',
-              cookingMode ? 'p-5 border-neutral-700 bg-neutral-900' : 'p-4 border-neutral-800/80 bg-neutral-900/50',
+              cookingMode ? 'hidden' : 'rounded-3xl border-border bg-surface p-5',
             ]"
             class="flex gap-4 border rounded-2xl cursor-pointer transition"
           >
             <span
-              :class="cookingMode ? 'w-7 h-7 text-sm bg-emerald-500/20 text-emerald-400' : 'w-6 h-6 text-xs bg-neutral-800'"
-              class="rounded-full font-bold flex items-center justify-center shrink-0 mt-0.5"
+              class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-soft/45 text-sm font-bold text-ink"
             >
               {{ Number(idx) + 1 }}
             </span>
             <p
-              :class="cookingMode ? 'text-base leading-relaxed text-white' : 'text-sm leading-relaxed text-neutral-200'"
+              class="text-base leading-relaxed text-ink"
             >
               {{ step }}
             </p>
           </li>
         </ol>
       </section>
+
+      <button
+        v-if="!cookingMode"
+        type="button"
+        @click="toggleCookingMode"
+        class="mt-10 w-full rounded-full bg-ink px-6 py-5 text-xl font-bold text-surface transition hover:bg-ink/85"
+      >
+        Lancer le mode cuisine
+      </button>
+
+      <div v-if="cookingMode" class="mt-16 flex gap-4">
+        <button
+          type="button"
+          @click="previousCookingStep"
+          :disabled="cookingStepIndex === 0"
+          class="flex-1 rounded-full bg-dark-surface px-5 py-5 text-xl font-bold text-canvas disabled:opacity-40"
+        >
+          Précédent
+        </button>
+        <button
+          type="button"
+          @click="nextCookingStep"
+          :disabled="cookingStepIndex >= (recipe.steps?.length || 1) - 1"
+          class="flex-1 rounded-full bg-accent px-5 py-5 text-xl font-bold text-ink disabled:opacity-40"
+        >
+          Suivant
+        </button>
+      </div>
     </article>
   </main>
 </template>

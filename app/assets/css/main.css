@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-canvas: 255 244 232;
+  --color-surface: 255 250 245;
+  --color-ink: 59 36 25;
+  --color-muted: 153 83 47;
+  --color-accent: 249 168 37;
+  --color-accent-strong: 201 75 13;
+  --color-accent-soft: 248 202 139;
+  --color-border: 238 209 178;
+  --color-dark-canvas: 43 24 16;
+  --color-dark-surface: 84 48 33;
+  --color-dark-border: 65 38 27;
+  --color-danger: 184 63 13;
+  --color-danger-soft: 255 248 241;
+}
+
+@layer components {
+  .field-control {
+    @apply rounded-xl border border-border bg-dark-canvas px-3 py-2 text-sm text-surface outline-none transition focus:border-accent;
+  }
+}

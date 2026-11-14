@@ -1,5 +1,6 @@
 <script setup lang="ts">
 const urlInput = ref('')
+const urlInputEl = ref<HTMLInputElement | null>(null)
 const loading = ref(false)
 const errorMsg = ref('')
 
@@ -73,119 +74,120 @@ async function handleExtract() {
     loading.value = false
   }
 }
+
+function focusUrlInput() {
+  urlInputEl.value?.focus()
+}
 </script>
 
 <template>
-  <main class="max-w-xl mx-auto px-4 py-8">
-    <header class="mb-8">
-      <h1 class="text-2xl font-bold tracking-tight">PastePlate</h1>
-      <p class="text-sm text-neutral-400 mt-1">
-        Colle un lien TikTok ou Instagram pour extraire la recette.
-      </p>
+  <main class="relative mx-auto min-h-screen max-w-3xl overflow-hidden px-5 py-10 sm:px-8 lg:px-10">
+    <div class="pointer-events-none absolute -right-32 -top-32 h-80 w-80 rounded-full bg-accent-soft opacity-80" />
+
+    <header class="relative mb-8">
+      <p class="mb-2 text-base font-medium text-muted">Ce soir, on cuisine quoi&nbsp;?</p>
+      <h1 class="font-serif text-5xl font-bold leading-none tracking-tight text-ink sm:text-6xl">Mes recettes</h1>
     </header>
 
-    <!-- Formulaire d'import -->
-    <form @submit.prevent="handleExtract" class="space-y-3 mb-8">
-      <div class="flex gap-2">
-        <input
-          v-model="urlInput"
-          type="url"
-          required
-          placeholder="https://www.tiktok.com/... ou instagram.com/reel/..."
-          :disabled="loading"
-          class="flex-1 bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-emerald-500 disabled:opacity-50"
-        />
-        <button
-          type="submit"
-          :disabled="loading || !urlInput"
-          class="bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-semibold px-5 py-3 rounded-xl text-sm transition disabled:opacity-50"
-        >
-          {{ loading ? 'Analyse...' : 'Extraire' }}
-        </button>
-      </div>
-
-      <p v-if="loading" class="text-xs text-emerald-400 animate-pulse">
-        Récupération de la vidéo et structuration des ingrédients par l'IA (5-10s)...
+    <form @submit.prevent="handleExtract" class="relative mb-8 rounded-[2rem] bg-ink p-5 shadow-sm sm:p-7">
+      <h2 class="mb-5 text-xl font-bold text-canvas">Importer une vidéo</h2>
+      <input
+        ref="urlInputEl"
+        v-model="urlInput"
+        type="url"
+        required
+        placeholder="Colle un lien TikTok ou Instagram"
+        :disabled="loading"
+        class="mb-4 w-full rounded-2xl bg-canvas px-5 py-4 text-base text-ink outline-none placeholder:text-muted/70 disabled:opacity-60"
+      />
+      <BaseButton
+        type="submit"
+        :disabled="loading || !urlInput"
+        size="lg"
+        class="w-full rounded-2xl px-5 py-4 text-lg"
+      >
+        {{ loading ? 'Analyse en cours...' : 'Extraire la recette' }}
+      </BaseButton>
+      <p v-if="loading" class="mt-4 animate-pulse text-sm text-accent-soft">
+        Récupération de la vidéo et structuration de la recette...
       </p>
-      <p v-if="errorMsg" class="text-xs text-red-400 bg-red-950/40 border border-red-900 rounded-lg p-3">
+      <p v-if="errorMsg" class="mt-4 rounded-xl border border-danger/30 bg-danger-soft p-4 text-sm text-danger">
         {{ errorMsg }}
       </p>
     </form>
 
-    <!-- Barre de recherche et filtres -->
-    <section v-if="recipes?.length" class="space-y-3 mb-6">
-      <input
-        v-model="searchQuery"
-        type="search"
-        placeholder="Rechercher un plat ou un ingrédient (ex: poulet, gnocchi)..."
-        class="w-full bg-neutral-900/80 border border-neutral-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-neutral-600"
-      />
+    <section v-if="recipes?.length" class="relative mb-8 space-y-4">
+      <div class="relative">
+        <span class="pointer-events-none absolute inset-y-0 left-5 flex items-center text-2xl text-muted/70">⌕</span>
+        <input
+          v-model="searchQuery"
+          type="search"
+          placeholder="Titre ou ingrédient..."
+          class="w-full rounded-full border-2 border-border bg-surface px-14 py-4 text-base text-ink outline-none placeholder:text-muted/70 focus:border-accent-strong"
+        />
+      </div>
 
-      <div class="flex gap-2">
+      <div class="flex gap-3 overflow-x-auto pb-1">
         <button
           v-for="tab in [
-            { id: 'all', label: 'Toutes' },
-            { id: 'tiktok', label: 'TikTok' },
-            { id: 'instagram', label: 'Instagram' },
+            { id: 'all', label: 'Tout' },
+            { id: 'tiktok', label: 'Salé' },
+            { id: 'instagram', label: 'Sucré' },
           ]"
           :key="tab.id"
           type="button"
           @click="selectedPlatform = tab.id as any"
-          :class="
-            selectedPlatform === tab.id
-              ? 'bg-neutral-100 text-neutral-950 font-semibold'
-              : 'bg-neutral-900 text-neutral-400 hover:text-neutral-200 border border-neutral-800'
-          "
-          class="px-3.5 py-1.5 rounded-lg text-xs transition"
+          :class="selectedPlatform === tab.id ? 'bg-accent-strong text-white' : 'bg-accent-soft/45 text-ink'"
+          class="shrink-0 rounded-full px-6 py-3 text-base font-medium transition"
         >
           {{ tab.label }}
         </button>
+        <span class="shrink-0 rounded-full bg-accent-soft/45 px-6 py-3 text-base text-ink">&lt; 20 min</span>
       </div>
     </section>
 
-    <!-- Bibliothèque de recettes -->
-    <section>
-      <h2 class="text-sm font-semibold uppercase tracking-wider text-neutral-400 mb-4">
-        Mes recettes ({{ filteredRecipes.length }})
-      </h2>
-
-      <div v-if="!recipes?.length" class="text-center py-12 border border-dashed border-neutral-800 rounded-2xl text-neutral-500 text-sm">
-        Aucune recette enregistrée pour l'instant.
+    <section class="relative">
+      <div v-if="!recipes?.length" class="py-16 text-center">
+        <div class="mx-auto mb-8 h-44 w-44 rounded-full bg-accent-soft" />
+        <h2 class="font-serif text-4xl font-bold text-ink">Ta bibliothèque est vide</h2>
+        <p class="mx-auto mt-4 max-w-md text-lg leading-relaxed text-muted">
+          Colle un lien TikTok ou Instagram, on s'occupe du reste.
+        </p>
+        <button
+          type="button"
+          @click="focusUrlInput"
+          class="mt-8 rounded-full bg-accent-strong px-8 py-4 text-lg font-bold text-white transition hover:bg-accent-strong/85"
+        >
+          Importer ma première recette
+        </button>
       </div>
 
-      <div v-else-if="!filteredRecipes.length" class="text-center py-10 text-neutral-500 text-sm">
+      <BaseCard v-else-if="!filteredRecipes.length" padding="lg" class="rounded-3xl border-2 border-border text-center text-muted">
         Aucune recette ne correspond à ta recherche.
-      </div>
+      </BaseCard>
 
-      <div v-else class="grid gap-3">
+      <div v-else class="grid grid-cols-1 gap-5 sm:grid-cols-2">
         <NuxtLink
-          v-for="recipe in filteredRecipes"
+          v-for="(recipe, index) in filteredRecipes"
           :key="recipe.id"
           :to="`/recipe/${recipe.id}`"
-          class="flex items-center gap-4 bg-neutral-900/70 hover:bg-neutral-900 border border-neutral-800/80 rounded-2xl p-3 transition"
+          class="overflow-hidden rounded-[2rem] bg-surface shadow-sm transition hover:-translate-y-1 hover:shadow-md"
         >
           <img
             v-if="recipe.thumbnailUrl"
             :src="recipe.thumbnailUrl"
             :alt="recipe.title"
-            class="w-16 h-16 rounded-xl object-cover bg-neutral-800 shrink-0"
+            class="h-48 w-full object-cover"
           />
-          <div v-else class="w-16 h-16 rounded-xl bg-neutral-800 flex items-center justify-center text-xs text-neutral-500 shrink-0">
-            Plat
-          </div>
-
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-neutral-800 text-neutral-300">
-                {{ recipe.platform }}
-              </span>
-              <span v-if="recipe.prepTime" class="text-xs text-neutral-400">
-                • {{ recipe.prepTime }}
-              </span>
-            </div>
-            <h3 class="font-medium text-neutral-100 truncate">{{ recipe.title }}</h3>
-            <p class="text-xs text-neutral-500 mt-0.5">
-              {{ Array.isArray(recipe.ingredients) ? recipe.ingredients.length : 0 }} ingrédients
+          <div
+            v-else
+            :class="index % 2 ? 'bg-accent/80' : 'bg-accent-strong/90'"
+            class="h-48 w-full"
+          />
+          <div class="p-5">
+            <h3 class="font-serif text-2xl font-bold leading-tight text-ink">{{ recipe.title }}</h3>
+            <p class="mt-3 text-base text-muted">
+              {{ recipe.prepTime || 'Durée inconnue' }} · {{ recipe.platform }}
             </p>
           </div>
         </NuxtLink>
