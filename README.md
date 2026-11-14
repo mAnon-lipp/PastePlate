@@ -1,6 +1,7 @@
 # PastePlate 🍽️
 
 > **Transformez vos vidéos culinaires TikTok et Instagram en fiches recettes structurées, consultables en cuisine d'un seul geste.**
+> 📌 **Note sur le périmètre du projet :** PastePlate est un projet développé à **but personnel** pour un usage quotidien individuel. À ce stade, l'application fonctionne sur une base de données partagée unique (sans système d'authentification ni gestion multi-comptes) et n'a pas vocation à être ouverte au grand public tel quel.
 
 **PastePlate** est une Progressive Web App (PWA) mobile-first conçue pour centraliser, extraire automatiquement et organiser les recettes repérées sur les réseaux sociaux. Grâce à une architecture hybride combinant scraping automatisé et intelligence artificielle multimodale (texte, audio et vidéo), l'application convertit un simple lien de partage en une fiche pratique pensée pour la cuisine.
 
