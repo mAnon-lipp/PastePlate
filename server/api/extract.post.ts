@@ -1,7 +1,9 @@
 import { GoogleGenAI, Type } from '@google/genai'
-import { prisma } from "../utils/prisma"
+import { writeFile, unlink } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
-// Helper pour résoudre les liens courts (ex: vm.tiktok.com/xxx -> www.tiktok.com/@user/video/xxx)
+// Helper pour résoudre les liens courts (ex: vm.tiktok.com/xxx)
 async function resolveFinalUrl(rawUrl: string): Promise<string> {
   try {
     const res = await fetch(rawUrl, { method: 'HEAD', redirect: 'follow' })
@@ -12,7 +14,6 @@ async function resolveFinalUrl(rawUrl: string): Promise<string> {
     return rawUrl.split('?')[0] ?? rawUrl
   }
 }
-
 export default defineEventHandler(async (event) => {
   const startTotal = Date.now()
   const config = useRuntimeConfig()
@@ -23,7 +24,6 @@ export default defineEventHandler(async (event) => {
   }
 
   // 1. Nettoyage et résolution de l'URL
-  console.log('[1/5] Résolution de l’URL :', body.url.trim())
   const cleanUrl = await resolveFinalUrl(body.url.trim())
   const isTikTok = cleanUrl.includes('tiktok.com')
   const isInstagram = cleanUrl.includes('instagram.com')
@@ -36,30 +36,28 @@ export default defineEventHandler(async (event) => {
   }
 
   const platform = isTikTok ? 'tiktok' : 'instagram'
-  console.log(`[1/5] URL nettoyée (${platform}) :`, cleanUrl)
 
-  // 2. Vérifier si la recette existe déjà en base
+  // 2. Vérifier le cache en base
   const existing = await prisma.recipe.findUnique({
     where: { sourceUrl: cleanUrl },
   })
   if (existing) {
-    console.log('[CACHE] Recette déjà en base, renvoi immédiat.')
     return { recipe: existing, cached: true }
   }
 
-  // 3. Extraction via Apify
+  // 3. Extraction des métadonnées + lien vidéo via Apify
   let caption = ''
   let thumbnailUrl: string | null = null
-  const startApify = Date.now()
+  let videoUrl: string | null = null
 
   try {
-    console.log('[2/5] Appel Apify en cours...')
+    console.log(`[APIFY] Extraction ${platform} pour :`, cleanUrl)
     if (isTikTok) {
       const apifyRes = await $fetch<any[]>(
         `https://api.apify.com/v2/acts/clockworks~tiktok-scraper/run-sync-get-dataset-items?token=${config.apifyApiToken}&timeout=45`,
         {
           method: 'POST',
-          timeout: 50000, // Timeout client HTTP à 50s
+          timeout: 50000,
           body: {
             postURLs: [cleanUrl],
             resultsPerPage: 1,
@@ -71,6 +69,12 @@ export default defineEventHandler(async (event) => {
       const item = apifyRes?.[0]
       caption = item?.text || ''
       thumbnailUrl = item?.videoMeta?.coverUrl || null
+      // Récupération du lien MP4 direct renvoyé par TikTok/Apify
+      videoUrl =
+        item?.videoMeta?.downloadAddr ||
+        item?.mediaUrls?.[0] ||
+        item?.videoUrl ||
+        null
     } else {
       const apifyRes = await $fetch<any[]>(
         `https://api.apify.com/v2/acts/apify~instagram-reel-scraper/run-sync-get-dataset-items?token=${config.apifyApiToken}&timeout=45`,
@@ -86,43 +90,28 @@ export default defineEventHandler(async (event) => {
       const item = apifyRes?.[0]
       caption = item?.caption || ''
       thumbnailUrl = item?.displayUrl || null
+      videoUrl = item?.videoUrl || null
     }
-    console.log(`[3/5] Apify terminé en ${((Date.now() - startApify) / 1000).toFixed(1)}s | Description : ${caption.length} caractères`)
   } catch (err: any) {
     console.error('[ERREUR APIFY] :', err?.data || err?.message || err)
     throw createError({
       statusCode: 502,
-      statusMessage: "Impossible de récupérer les infos de la vidéo (timeout Apify, compte privé ou lien invalide).",
+      statusMessage: "Impossible de récupérer la vidéo (compte privé, timeout ou lien invalide).",
     })
   }
 
-  if (!caption || caption.trim().length < 15) {
-    console.warn('[STOP] Description vide ou trop courte :', caption)
-    throw createError({
-      statusCode: 422,
-      statusMessage: "La description est vide ou trop courte (la recette est peut-être uniquement à l'oral dans la vidéo).",
-    })
-  }
-
-  // 4. Analyse et structuration via Gemini (avec fallback automatique si surcharge 503)
-  const startGemini = Date.now()
-  let parsed: any = {}
-
-  const prompt = `Extrais la recette de cuisine contenue dans cette description de post ${platform}. 
-Ignore tous les hashtags, appels à l'action ("abonne-toi", "like") et emojis superflus.
-Traduis en français si nécessaire et normalise les unités (g, ml, cl, càs, càc, pincée).
-RÈGLE IMPORTANTE SUR LES UNITÉS : Si un ingrédient se compte à l'unité (ex: 2 œufs, 1 oignon, 3 gousses d'ail), laisse le champ "unit" strictement VIDE (""). N'écris JAMAIS "pièce", "pièces" ou "unité".
-
-Texte brut :
-"""
-${caption}
-"""`
+  // Configuration commune du schéma JSON Gemini
+  const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
 
   const generationConfig = {
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
       properties: {
+        hasRecipe: {
+          type: Type.BOOLEAN,
+          description: 'true si une vraie recette avec des ingrédients est présente, false sinon',
+        },
         title: { type: Type.STRING, description: 'Nom propre et appétissant du plat' },
         prepTime: { type: Type.STRING, description: 'Temps estimé ex: 20 min' },
         servings: { type: Type.INTEGER, description: 'Nombre de portions (défaut 2)' },
@@ -151,13 +140,11 @@ ${caption}
           description: 'Étapes de préparation claires et ordonnées',
         },
       },
-      required: ['title', 'prepTime', 'servings', 'ingredients', 'steps'],
+      required: ['hasRecipe', 'title', 'prepTime', 'servings', 'ingredients', 'steps'],
     },
   }
 
-  const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
-
-  // Récupération dynamique des modèles Flash disponibles sur ta clé API
+  // Détection des modèles Flash disponibles
   let modelsToTry: string[] = ['gemini-3.8-flash']
   try {
     const pager = await ai.models.list()
@@ -176,67 +163,156 @@ ${caption}
         availableFlash.push(name)
       }
     }
-    if (availableFlash.length > 0) {
-      modelsToTry = availableFlash
+    if (availableFlash.length > 0) modelsToTry = availableFlash
+  } catch {}
+
+  async function runGeminiWithFallback(contents: any) {
+    let lastErr: any = null
+    for (const modelName of modelsToTry) {
+      try {
+        const res = await ai.models.generateContent({
+          model: modelName,
+          contents,
+          config: generationConfig,
+        })
+        return JSON.parse(res.text || '{}')
+      } catch (err: any) {
+        lastErr = err
+        console.warn(`[WARN GEMINI] ${modelName} échec (${err?.status || err?.message})`)
+        await new Promise((r) => setTimeout(r, 1200))
+      }
     }
-    console.log('[INFO GEMINI] Modèles Flash détectés sur ton compte :', modelsToTry)
-  } catch (listErr) {
-    console.warn('[WARN] Impossible de lister les modèles, utilisation de gemini-3.8-flash par défaut.')
+    throw lastErr
   }
 
-  let lastError: any = null
+  let parsed: any = null
 
-  for (const modelName of modelsToTry) {
+  // 4A. TENTATIVE 1 : Analyse de la description texte (si assez longue)
+  if (caption && caption.trim().length >= 30) {
+    console.log('[GEMINI TEXTE] Analyse de la description...')
+    const textPrompt = `Extrais la recette de cuisine contenue dans cette description de post ${platform}.
+Ignore tous les hashtags, appels à l'action et emojis.
+Traduis en français si nécessaire et normalise les unités (g, ml, cl, càs, càc, pincée).
+RÈGLE IMPORTANTE SUR LES UNITÉS : Si un ingrédient se compte à l'unité (ex: 2 œufs, 1 oignon), laisse le champ "unit" strictement VIDE (""). N'écris JAMAIS "pièce" ou "unité".
+Si le texte ne contient PAS la recette (ex: "la recette est dans la vidéo"), mets "hasRecipe": false.
+
+Texte brut :
+"""
+${caption}
+"""`
     try {
-      console.log(`[4/5] Envoi à Gemini (${modelName})...`)
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: prompt,
-        config: generationConfig,
+      const result = await runGeminiWithFallback(textPrompt)
+      if (result?.hasRecipe && Array.isArray(result.ingredients) && result.ingredients.length > 0) {
+        parsed = result
+      } else {
+        console.log('[GEMINI TEXTE] Pas de recette trouvée dans la légende, bascule vers la vidéo...')
+      }
+    } catch (err) {
+      console.warn('[GEMINI TEXTE] Échec analyse texte, tentative via vidéo...')
+    }
+  }
+
+  // 4B. TENTATIVE 2 (FALLBACK MULTIMODAL) : Analyse directe de la vidéo + audio
+  if (!parsed) {
+    if (!videoUrl) {
+      throw createError({
+        statusCode: 422,
+        statusMessage: "Aucune recette trouvée dans la description et flux vidéo inaccessible.",
+      })
+    }
+
+    console.log('[GEMINI VIDÉO] Téléchargement temporaire du MP4 pour analyse audio/visuelle...')
+    const tempFilePath = join(tmpdir(), `pasteplate_${Date.now()}.mp4`)
+    let uploadedFile: any = null
+
+    try {
+      // Téléchargement du flux vidéo vers /tmp
+      const videoRes = await fetch(videoUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          Referer: isTikTok ? 'https://www.tiktok.com/' : 'https://www.instagram.com/',
+        },
       })
 
-      console.log(`[4/5] Gemini (${modelName}) terminé en ${((Date.now() - startGemini) / 1000).toFixed(1)}s`)
-      parsed = JSON.parse(response.text || '{}')
-      lastError = null
-      break
+      if (!videoRes.ok) {
+        throw new Error(`Échec téléchargement vidéo (${videoRes.status})`)
+      }
+
+      const arrayBuffer = await videoRes.arrayBuffer()
+      await writeFile(tempFilePath, Buffer.from(arrayBuffer))
+
+      // Upload vers la File API de Gemini
+      console.log('[GEMINI VIDÉO] Envoi du fichier à Gemini...')
+      uploadedFile = await ai.files.upload({
+        file: tempFilePath,
+        config: { mimeType: 'video/mp4' },
+      })
+
+      // Attente que Gemini termine l'indexation de la vidéo
+      let fileState = await ai.files.get({ name: uploadedFile.name })
+      let retries = 0
+      while (fileState.state === 'PROCESSING' && retries < 15) {
+        await new Promise((r) => setTimeout(r, 2000))
+        fileState = await ai.files.get({ name: uploadedFile.name })
+        retries++
+      }
+
+      if (fileState.state !== 'ACTIVE') {
+        throw new Error(`Traitement vidéo Gemini incomplet (${fileState.state})`)
+      }
+
+      console.log('[GEMINI VIDÉO] Analyse audio + visuelle en cours...')
+      const videoPrompt = `Regarde et écoute attentivement cette vidéo de cuisine ${platform} (lis le texte affiché à l'écran ET écoute la voix off).
+Extrais la recette complète : titre du plat, temps estimé, portions, liste exacte des ingrédients avec leurs quantités et étapes de préparation.
+Traduis en français si nécessaire et normalise les unités (g, ml, cl, càs, càc, pincée).
+RÈGLE IMPORTANTE SUR LES UNITÉS : Si un ingrédient se compte à l'unité (ex: 2 œufs, 1 oignon), laisse le champ "unit" strictement VIDE (""). N'écris JAMAIS "pièce" ou "unité".
+${caption ? `Contexte supplémentaire de la légende : "${caption}"` : ''}`
+
+      parsed = await runGeminiWithFallback([
+        {
+          fileData: {
+            fileUri: fileState.uri,
+            mimeType: fileState.mimeType,
+          },
+        },
+        videoPrompt,
+      ])
     } catch (err: any) {
-      lastError = err
-      console.warn(`[WARN GEMINI] ${modelName} a échoué (${err?.status || err?.message}), test du suivant...`)
-      await new Promise((r) => setTimeout(r, 1500)) // Petite pause de 1.5s avant le fallback
+      console.error('[ERREUR GEMINI VIDÉO] :', err?.message || err)
+      throw createError({
+        statusCode: 502,
+        statusMessage: "Impossible d'extraire la recette depuis la vidéo (flux protégé ou trop lourd).",
+      })
+    } finally {
+      // Nettoyage systématique du fichier local /tmp et du fichier distant chez Gemini
+      await unlink(tempFilePath).catch(() => {})
+      if (uploadedFile?.name) {
+        await ai.files.delete({ name: uploadedFile.name }).catch(() => {})
+      }
     }
   }
 
-  if (lastError) {
-    console.error('[ERREUR GEMINI FINALE] :', lastError?.message || lastError)
+  if (!parsed || !parsed.ingredients?.length) {
     throw createError({
-      statusCode: 502,
-      statusMessage: `Erreur Gemini (${lastError?.status || 'inconnue'}) : ${lastError?.message || 'Serveurs surchargés'}`,
+      statusCode: 422,
+      statusMessage: "Aucune recette détectée dans cette vidéo.",
     })
   }
 
-  // 5. Sauvegarde dans PostgreSQL via Prisma
-  try {
-    console.log('[5/5] Sauvegarde dans PostgreSQL (Supabase)...')
-    const recipe = await prisma.recipe.create({
-      data: {
-        sourceUrl: cleanUrl,
-        platform,
-        title: parsed.title || 'Recette sans titre',
-        prepTime: parsed.prepTime || null,
-        servings: parsed.servings || 2,
-        thumbnailUrl,
-        ingredients: parsed.ingredients || [],
-        steps: parsed.steps || [],
-      },
-    })
+  // 5. Sauvegarde dans PostgreSQL
+  const recipe = await prisma.recipe.create({
+    data: {
+      sourceUrl: cleanUrl,
+      platform,
+      title: parsed.title || 'Recette sans titre',
+      prepTime: parsed.prepTime || null,
+      servings: parsed.servings || 2,
+      thumbnailUrl,
+      ingredients: parsed.ingredients || [],
+      steps: parsed.steps || [],
+    },
+  })
 
-    console.log(`[SUCCÈS] Recette enregistrée en ${((Date.now() - startTotal) / 1000).toFixed(1)}s total ! ID :`, recipe.id)
-    return { recipe, cached: false }
-  } catch (err: any) {
-    console.error('[ERREUR PRISMA] :', err)
-    throw createError({
-      statusCode: 500,
-      statusMessage: 'Erreur lors de la sauvegarde en base de données.',
-    })
-  }
+  console.log(`[SUCCÈS] Recette enregistrée en ${((Date.now() - startTotal) / 1000).toFixed(1)}s !`)
+  return { recipe, cached: false }
 })
