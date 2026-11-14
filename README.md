@@ -35,7 +35,7 @@ Sauvegarder des recettes sur TikTok ou Instagram pose trois problèmes récurren
 
 ### 🗂️ Bibliothèque & Gestion complète (CRUD)
 - **Recherche instantanée** par nom de plat ou par ingrédient disponible dans le frigo.
-- **Filtrage par plateforme** (Toutes, TikTok, Instagram).
+- **Filtrage par type de recette et durée** (Toutes, Salé, Sucré, moins de 20 minutes).
 - **Édition complète et suppression** : modification manuelle des titres, portions, temps de préparation, ingrédients et étapes.
 
 ---
