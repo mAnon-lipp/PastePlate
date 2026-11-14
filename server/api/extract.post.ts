@@ -93,12 +93,13 @@ export default defineEventHandler(async (event) => {
         null
     } else {
       const apifyRes = await $fetch<any[]>(
-        `https://api.apify.com/v2/acts/apify~instagram-reel-scraper/run-sync-get-dataset-items?token=${config.apifyApiToken}&timeout=45`,
+        `https://api.apify.com/v2/acts/apify~instagram-scraper/run-sync-get-dataset-items?token=${config.apifyApiToken}&timeout=45`,
         {
           method: 'POST',
           timeout: 50000,
           body: {
-            username: [cleanUrl],
+            directUrls: [cleanUrl],
+            resultsType: 'posts',
             resultsLimit: 1,
           },
         }
@@ -106,20 +107,18 @@ export default defineEventHandler(async (event) => {
       const item = apifyRes?.[0]
 
       caption = item?.caption || ''
-      thumbnailUrl = item?.displayUrl || null
-      videoUrl = item?.videoUrl || item?.videoPlaybackUrl || null
-    }
+      thumbnailUrl = item?.displayUrl || item?.images?.[0] || null
+      videoUrl =
+        item?.videoUrl ||
+        item?.video_url ||
+        item?.videoPlaybackUrl ||
+        item?.childPosts?.find((c: any) => c.videoUrl)?.videoUrl ||
+        null
 
-    console.log(
-      `[APIFY RÉSULTAT] Caption: ${caption.length}c | Subtitles: ${subtitles.length}c | VideoURL: ${videoUrl ? 'OK' : 'NULL'}`
-    )
-  } catch (err: any) {
-    console.error('[ERREUR APIFY] :', err?.data || err?.message || err)
-    throw createError({
-      statusCode: 502,
-      statusMessage: "Impossible de récupérer la vidéo (compte privé, timeout ou lien invalide).",
-    })
-  }
+      if (!videoUrl && item) {
+        console.warn('[APIFY INSTA DEBUG] Clés reçues :', Object.keys(item))
+      }
+    }
 
   // Configuration commune du schéma JSON Gemini
   const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
