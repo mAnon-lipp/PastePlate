@@ -64,11 +64,11 @@ export default defineEventHandler(async (event) => {
             shouldDownloadVideos: true,
             shouldDownloadSubtitles: true,
             shouldDownloadCovers: false,
+            videoKvStoreIdOrName: 'pasteplate-videos', // Force Apify à stocker le MP4 et renvoyer un lien direct sans 403
           },
         }
       )
       const item = apifyRes?.[0]
-      console.log('[APIFY TIKTOK CLÉS DISPONIBLES] :', Object.keys(item || {}))
 
       caption = item?.text || ''
       thumbnailUrl = item?.videoMeta?.coverUrl || null
@@ -87,9 +87,9 @@ export default defineEventHandler(async (event) => {
         }
       }
 
-      // Apify stocke l'URL MP4 téléchargée dans mediaUrls[0] ou videoMeta.downloadAddr
+      // Priorité absolue au lien hébergé dans le Key-Value Store d'Apify (mediaUrls[0])
       videoUrl =
-        (Array.isArray(item?.mediaUrls) && item.mediaUrls.find((u: string) => u.includes('.mp4') || u.includes('apify'))) ||
+        (Array.isArray(item?.mediaUrls) && item.mediaUrls.find((u: string) => u.includes('apify.com'))) ||
         item?.mediaUrls?.[0] ||
         item?.videoUrl ||
         item?.videoMeta?.downloadAddr ||
