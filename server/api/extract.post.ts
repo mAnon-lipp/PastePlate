@@ -89,6 +89,7 @@ export default defineEventHandler(async (event) => {
 
       // Apify stocke l'URL MP4 téléchargée dans mediaUrls[0] ou videoMeta.downloadAddr
       videoUrl =
+        (Array.isArray(item?.mediaUrls) && item.mediaUrls.find((u: string) => u.includes('.mp4') || u.includes('apify'))) ||
         item?.mediaUrls?.[0] ||
         item?.videoUrl ||
         item?.videoMeta?.downloadAddr ||
@@ -306,7 +307,7 @@ ${caption ? `Contexte supplémentaire de la légende : "${caption}"` : ''}`
       console.error('[ERREUR GEMINI VIDÉO] :', err?.message || err)
       throw createError({
         statusCode: 502,
-        statusMessage: "Impossible d'extraire la recette depuis la vidéo (flux protégé ou trop lourd).",
+        statusMessage: `Échec extraction vidéo : ${err?.message || 'erreur inconnue'}`,
       })
     } finally {
       await unlink(tempFilePath).catch(() => {})
