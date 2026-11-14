@@ -120,6 +120,17 @@ export default defineEventHandler(async (event) => {
       }
     }
 
+    console.log(
+      `[APIFY RÉSULTAT] Caption: ${caption.length}c | Subtitles: ${subtitles.length}c | VideoURL: ${videoUrl ? 'OK' : 'NULL'}`
+    )
+  } catch (err: any) {
+    console.error('[ERREUR APIFY] :', err?.data || err?.message || err)
+    throw createError({
+      statusCode: 502,
+      statusMessage: "Impossible de récupérer la vidéo (compte privé, timeout ou lien invalide).",
+    })
+  }
+
   // Configuration commune du schéma JSON Gemini
   const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
 
