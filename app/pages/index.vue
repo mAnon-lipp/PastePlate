@@ -8,7 +8,8 @@ const errorMsg = ref('')
 const searchQuery = ref('')
 const selectedPlatform = ref<'all' | 'tiktok' | 'instagram'>('all')
 const selectedTaste = ref<'all' | 'savory' | 'sweet'>('all')
-const quickOnly = ref(false)
+type DurationFilter = 'all' | 'under15' | '15to30' | '30to60' | 'over60'
+const selectedDuration = ref<DurationFilter>('all')
 
 const { data: recipes, refresh } = await useFetch<any[]>('/api/recipes')
 
@@ -37,6 +38,8 @@ const sweetTerms = [
   'framboise',
   'patisserie',
   'pâtisserie',
+  'nutella',
+  'blondies'
 ]
 const savoryTerms = [
   'sel',
@@ -75,11 +78,20 @@ function normalizedText(value: unknown): string {
 
 function recipeTaste(recipe: any): 'savory' | 'sweet' | 'unknown' {
   const ingredientText = Array.isArray(recipe.ingredients)
-    ? recipe.ingredients.map((ingredient: any) => ingredient?.name || '').join(' ')
+    ? recipe.ingredients
+        .map((ingredient: any) =>
+          typeof ingredient === 'string'
+            ? ingredient
+            : `${ingredient?.name || ''} ${ingredient?.category || ''}`
+        )
+        .join(' ')
     : ''
-  const text = normalizedText(`${recipe.title || ''} ${ingredientText}`)
-  const sweetScore = sweetTerms.filter((term) => text.includes(normalizedText(term))).length
-  const savoryScore = savoryTerms.filter((term) => text.includes(normalizedText(term))).length
+  const titleText = normalizedText(recipe.title)
+  const ingredients = normalizedText(ingredientText)
+  const score = (terms: string[], text: string) =>
+    terms.filter((term) => text.includes(normalizedText(term))).length
+  const sweetScore = score(sweetTerms, titleText) * 2 + score(sweetTerms, ingredients)
+  const savoryScore = score(savoryTerms, titleText) * 2 + score(savoryTerms, ingredients)
 
   if (sweetScore === savoryScore) return 'unknown'
   return sweetScore > savoryScore ? 'sweet' : 'savory'
@@ -89,7 +101,12 @@ function recipeDurationMinutes(value: unknown): number | null {
   const text = normalizedText(value).replace(',', '.')
   if (!text) return null
 
-  const hours = text.match(/(\d+(?:\.\d+)?)\s*(?:h|heure|heures)\b/)
+  const compactHours = text.match(/(\d+(?:\.\d+)?)\s*h(?:\s*(\d{1,2}))?\b/)
+  if (compactHours) {
+    return Number(compactHours[1]) * 60 + Number(compactHours[2] || 0)
+  }
+
+  const hours = text.match(/(\d+(?:\.\d+)?)\s*(?:heure|heures)\b/)
   const minutes = text.match(/(\d+)\s*(?:min|minute|minutes)\b/)
   if (hours || minutes) {
     return (hours ? Number(hours[1]) * 60 : 0) + (minutes ? Number(minutes[1]) : 0)
@@ -97,6 +114,24 @@ function recipeDurationMinutes(value: unknown): number | null {
 
   const number = text.match(/\b(\d+)\b/)
   return number ? Number(number[1]) : null
+}
+
+function matchesDurationFilter(value: unknown): boolean {
+  if (selectedDuration.value === 'all') return true
+
+  const duration = recipeDurationMinutes(value)
+  if (duration === null) return false
+
+  switch (selectedDuration.value) {
+    case 'under15':
+      return duration < 15
+    case '15to30':
+      return duration >= 15 && duration < 30
+    case '30to60':
+      return duration >= 30 && duration <= 60
+    case 'over60':
+      return duration > 60
+  }
 }
 
 // Détection automatique d'un lien partagé depuis TikTok / Instagram (Web Share Target)
@@ -127,15 +162,13 @@ const filteredRecipes = computed(() => {
       return false
     }
 
-    if (selectedTaste.value !== 'all' && recipeTaste(recipe) !== selectedTaste.value) {
+    const taste = recipeTaste(recipe)
+    if (selectedTaste.value !== 'all' && taste !== 'unknown' && taste !== selectedTaste.value) {
       return false
     }
 
-    if (quickOnly.value) {
-      const duration = recipeDurationMinutes(recipe.prepTime)
-      if (duration === null || duration >= 20) {
-        return false
-      }
+    if (!matchesDurationFilter(recipe.prepTime)) {
+      return false
     }
 
     // Filtre recherche (titre ou ingrédients)
@@ -241,14 +274,25 @@ function focusUrlInput() {
         >
           {{ tab.label }}
         </button>
+      </div>
+
+      <div class="flex gap-3 overflow-x-auto pb-1">
         <button
+          v-for="filter in [
+            { id: 'all', label: 'Tous les temps' },
+            { id: 'under15', label: '< 15 min' },
+            { id: '15to30', label: '15–30 min' },
+            { id: '30to60', label: '30–60 min' },
+            { id: 'over60', label: '> 1 h' },
+          ]"
+          :key="filter.id"
           type="button"
-          @click="quickOnly = !quickOnly"
-          :aria-pressed="quickOnly"
-          :class="quickOnly ? 'bg-accent-strong text-white' : 'bg-accent-soft/45 text-ink'"
-          class="shrink-0 rounded-full px-6 py-3 text-base transition"
+          @click="selectedDuration = filter.id as DurationFilter"
+          :aria-pressed="selectedDuration === filter.id"
+          :class="selectedDuration === filter.id ? 'bg-accent-strong text-white' : 'bg-accent-soft/45 text-ink'"
+          class="shrink-0 rounded-full px-5 py-3 text-base transition"
         >
-          &lt; 20 min
+          {{ filter.label }}
         </button>
       </div>
     </section>
