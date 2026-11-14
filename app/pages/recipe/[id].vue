@@ -353,10 +353,11 @@ async function handleDelete() {
             <button
               type="button"
               @click="removeIngredient(idx)"
-              class="px-1.5 text-sm text-muted hover:text-danger"
-              title="Supprimer"
+              class="shrink-0 rounded-lg bg-danger px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-danger/85"
+              aria-label="Supprimer cet ingrédient"
+              title="Supprimer cet ingrédient"
             >
-              ✕
+              Supprimer
             </button>
           </div>
 
@@ -411,7 +412,7 @@ async function handleDelete() {
           type="button"
           @click="handleDelete"
           :disabled="deleting"
-          class="rounded-xl border border-danger/50 bg-danger/10 px-4 py-2.5 text-xs font-semibold text-danger transition hover:bg-danger/20"
+          class="rounded-xl bg-danger px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-danger/85 disabled:opacity-50"
         >
           {{ deleting ? 'Suppression...' : confirmDelete ? 'Confirmer la suppression ?' : 'Supprimer la recette' }}
         </button>
