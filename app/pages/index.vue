@@ -7,10 +7,97 @@ const errorMsg = ref('')
 // Recherche et filtres
 const searchQuery = ref('')
 const selectedPlatform = ref<'all' | 'tiktok' | 'instagram'>('all')
+const selectedTaste = ref<'all' | 'savory' | 'sweet'>('all')
+const quickOnly = ref(false)
 
 const { data: recipes, refresh } = await useFetch<any[]>('/api/recipes')
 
 const route = useRoute()
+
+const sweetTerms = [
+  'sucre',
+  'chocolat',
+  'caramel',
+  'gateau',
+  'gâteau',
+  'dessert',
+  'cookie',
+  'muffin',
+  'brownie',
+  'tarte',
+  'pancake',
+  'crepe',
+  'crêpe',
+  'gaufre',
+  'compote',
+  'confiture',
+  'miel',
+  'vanille',
+  'fraise',
+  'framboise',
+  'patisserie',
+  'pâtisserie',
+]
+const savoryTerms = [
+  'sel',
+  'poivre',
+  'poulet',
+  'boeuf',
+  'bœuf',
+  'porc',
+  'saumon',
+  'thon',
+  'viande',
+  'poisson',
+  'jambon',
+  'lard',
+  'fromage',
+  'pate',
+  'pâtes',
+  'riz',
+  'pomme de terre',
+  'oignon',
+  'ail',
+  'tomate',
+  'courgette',
+  'salade',
+  'soupe',
+  'quiche',
+  'pizza',
+]
+
+function normalizedText(value: unknown): string {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+}
+
+function recipeTaste(recipe: any): 'savory' | 'sweet' | 'unknown' {
+  const ingredientText = Array.isArray(recipe.ingredients)
+    ? recipe.ingredients.map((ingredient: any) => ingredient?.name || '').join(' ')
+    : ''
+  const text = normalizedText(`${recipe.title || ''} ${ingredientText}`)
+  const sweetScore = sweetTerms.filter((term) => text.includes(normalizedText(term))).length
+  const savoryScore = savoryTerms.filter((term) => text.includes(normalizedText(term))).length
+
+  if (sweetScore === savoryScore) return 'unknown'
+  return sweetScore > savoryScore ? 'sweet' : 'savory'
+}
+
+function recipeDurationMinutes(value: unknown): number | null {
+  const text = normalizedText(value).replace(',', '.')
+  if (!text) return null
+
+  const hours = text.match(/(\d+(?:\.\d+)?)\s*(?:h|heure|heures)\b/)
+  const minutes = text.match(/(\d+)\s*(?:min|minute|minutes)\b/)
+  if (hours || minutes) {
+    return (hours ? Number(hours[1]) * 60 : 0) + (minutes ? Number(minutes[1]) : 0)
+  }
+
+  const number = text.match(/\b(\d+)\b/)
+  return number ? Number(number[1]) : null
+}
 
 // Détection automatique d'un lien partagé depuis TikTok / Instagram (Web Share Target)
 onMounted(async () => {
@@ -38,6 +125,17 @@ const filteredRecipes = computed(() => {
     // Filtre plateforme
     if (selectedPlatform.value !== 'all' && recipe.platform !== selectedPlatform.value) {
       return false
+    }
+
+    if (selectedTaste.value !== 'all' && recipeTaste(recipe) !== selectedTaste.value) {
+      return false
+    }
+
+    if (quickOnly.value) {
+      const duration = recipeDurationMinutes(recipe.prepTime)
+      if (duration === null || duration >= 20) {
+        return false
+      }
     }
 
     // Filtre recherche (titre ou ingrédients)
@@ -131,18 +229,27 @@ function focusUrlInput() {
         <button
           v-for="tab in [
             { id: 'all', label: 'Tout' },
-            { id: 'tiktok', label: 'Salé' },
-            { id: 'instagram', label: 'Sucré' },
+            { id: 'savory', label: 'Salé' },
+            { id: 'sweet', label: 'Sucré' },
           ]"
           :key="tab.id"
           type="button"
-          @click="selectedPlatform = tab.id as any"
-          :class="selectedPlatform === tab.id ? 'bg-accent-strong text-white' : 'bg-accent-soft/45 text-ink'"
+          @click="selectedTaste = tab.id as 'all' | 'savory' | 'sweet'"
+          :aria-pressed="selectedTaste === tab.id"
+          :class="selectedTaste === tab.id ? 'bg-accent-strong text-white' : 'bg-accent-soft/45 text-ink'"
           class="shrink-0 rounded-full px-6 py-3 text-base font-medium transition"
         >
           {{ tab.label }}
         </button>
-        <span class="shrink-0 rounded-full bg-accent-soft/45 px-6 py-3 text-base text-ink">&lt; 20 min</span>
+        <button
+          type="button"
+          @click="quickOnly = !quickOnly"
+          :aria-pressed="quickOnly"
+          :class="quickOnly ? 'bg-accent-strong text-white' : 'bg-accent-soft/45 text-ink'"
+          class="shrink-0 rounded-full px-6 py-3 text-base transition"
+        >
+          &lt; 20 min
+        </button>
       </div>
     </section>
 
