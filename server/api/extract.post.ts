@@ -44,7 +44,7 @@ export default defineEventHandler(async (event) => {
     return { recipe: existing, cached: true }
   }
 
-  // 3. Extraction des métadonnées + sous-titres + lien vidéo via Apify
+  // 3. Extraction des métadonnées + sous-titres via Apify
   let caption = ''
   let subtitles = ''
   let thumbnailUrl: string | null = null
@@ -61,10 +61,9 @@ export default defineEventHandler(async (event) => {
           body: {
             postURLs: [cleanUrl],
             resultsPerPage: 1,
-            shouldDownloadVideos: true,
+            shouldDownloadVideos: false,
             shouldDownloadSubtitles: true,
             shouldDownloadCovers: false,
-            videoKvStoreIdOrName: 'pasteplate-videos', // Force Apify à stocker le MP4 et renvoyer un lien direct sans 403
           },
         }
       )
@@ -87,9 +86,7 @@ export default defineEventHandler(async (event) => {
         }
       }
 
-      // Priorité absolue au lien hébergé dans le Key-Value Store d'Apify (mediaUrls[0])
       videoUrl =
-        (Array.isArray(item?.mediaUrls) && item.mediaUrls.find((u: string) => u.includes('apify.com'))) ||
         item?.mediaUrls?.[0] ||
         item?.videoUrl ||
         item?.videoMeta?.downloadAddr ||
@@ -107,7 +104,6 @@ export default defineEventHandler(async (event) => {
         }
       )
       const item = apifyRes?.[0]
-      console.log('[APIFY INSTA CLÉS DISPONIBLES] :', Object.keys(item || {}))
 
       caption = item?.caption || ''
       thumbnailUrl = item?.displayUrl || null
@@ -240,22 +236,36 @@ ${combinedText}
 
   // 4B. TENTATIVE 2 (FALLBACK MULTIMODAL) : Analyse directe de la vidéo + audio
   if (!parsed) {
-    if (!videoUrl) {
-      throw createError({
-        statusCode: 422,
-        statusMessage: "Aucune recette trouvée dans la description et flux vidéo inaccessible.",
-      })
-    }
-
     console.log('[GEMINI VIDÉO] Téléchargement temporaire du MP4 pour analyse audio/visuelle...')
     const tempFilePath = join(tmpdir(), `pasteplate_${Date.now()}.mp4`)
     let uploadedFile: any = null
 
     try {
-      const videoRes = await fetch(videoUrl, {
+      let directMp4Url = videoUrl
+
+      // Sur TikTok, les URLs brutes renvoient 403 : on récupère un flux MP4 direct sans protection via TikWM
+      if (isTikTok) {
+        try {
+          const tikwm = await $fetch<any>('https://www.tikwm.com/api/', {
+            method: 'POST',
+            body: new URLSearchParams({ url: cleanUrl, hd: '1' }).toString(),
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          })
+          if (tikwm?.data?.play) {
+            directMp4Url = tikwm.data.play
+          }
+        } catch (tikwmErr) {
+          console.warn('[WARN TIKWM] Fallback sur videoUrl Apify :', tikwmErr)
+        }
+      }
+
+      if (!directMp4Url) {
+        throw new Error('Aucun lien MP4 exploitable trouvé')
+      }
+
+      const videoRes = await fetch(directMp4Url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Referer: isTikTok ? 'https://www.tiktok.com/' : 'https://www.instagram.com/',
         },
       })
 
@@ -269,9 +279,7 @@ ${combinedText}
       console.log('[GEMINI VIDÉO] Envoi du fichier à Gemini...')
       uploadedFile = await ai.files.upload({
         file: tempFilePath,
-        config: {
-          mimeType: 'video/mp4',
-        },
+        config: { mimeType: 'video/mp4' },
       })
 
       // Attente que Gemini termine l'indexation de la vidéo
