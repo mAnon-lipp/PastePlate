@@ -3,6 +3,11 @@ const urlInput = ref('')
 const urlInputEl = ref<HTMLInputElement | null>(null)
 const loading = ref(false)
 const errorMsg = ref('')
+const failedImages = ref<Set<string>>(new Set())
+
+function markImageFailed(recipeId: string) {
+  failedImages.value = new Set([...failedImages.value, recipeId])
+}
 
 // Recherche et filtres
 const searchQuery = ref('')
@@ -325,10 +330,11 @@ function focusUrlInput() {
           class="overflow-hidden rounded-[2rem] bg-surface shadow-sm transition hover:-translate-y-1 hover:shadow-md"
         >
           <img
-            v-if="recipe.thumbnailUrl"
-            :src="recipe.thumbnailUrl"
+            v-if="recipe.thumbnailUrl && !failedImages.has(recipe.id)"
+            :src="`/api/image?url=${encodeURIComponent(recipe.thumbnailUrl)}`"
             :alt="recipe.title"
             class="h-48 w-full object-cover"
+            @error="markImageFailed(recipe.id)"
           />
           <div
             v-else
