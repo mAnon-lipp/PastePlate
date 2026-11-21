@@ -331,7 +331,9 @@ function focusUrlInput() {
         >
           <img
             v-if="recipe.thumbnailUrl && !failedImages.has(recipe.id)"
-            :src="`/api/image?url=${encodeURIComponent(recipe.thumbnailUrl)}`"
+            :src="recipe.thumbnailUrl.startsWith('data:')
+              ? recipe.thumbnailUrl
+              : `/api/image?url=${encodeURIComponent(recipe.thumbnailUrl)}`"
             :alt="recipe.title"
             class="h-48 w-full object-cover"
             @error="markImageFailed(recipe.id)"

@@ -3,6 +3,33 @@ import { writeFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
+async function embedThumbnail(url: string | null): Promise<string | null> {
+  if (!url || url.startsWith('data:image/')) return url
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        Accept: 'image/*',
+      },
+      signal: AbortSignal.timeout(15_000),
+    })
+
+    if (!response.ok) return url
+
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.startsWith('image/')) return url
+
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (bytes.byteLength === 0 || bytes.byteLength > 1_000_000) return url
+
+    return `data:${contentType};base64,${bytes.toString('base64')}`
+  } catch {
+    return url
+  }
+}
+
 // Helper pour résoudre les liens courts (ex: vm.tiktok.com/xxx)
 async function resolveFinalUrl(rawUrl: string): Promise<string> {
   try {
@@ -454,6 +481,8 @@ ${caption ? `Contexte supplémentaire de la légende : "${caption}"` : ''}`
   }
 
   // 5. Sauvegarde dans PostgreSQL
+  const stableThumbnailUrl = await embedThumbnail(thumbnailUrl)
+
   const recipe = await prisma.recipe.create({
     data: {
       sourceUrl: cleanUrl,
@@ -461,7 +490,7 @@ ${caption ? `Contexte supplémentaire de la légende : "${caption}"` : ''}`
       title: parsed.title || 'Recette sans titre',
       prepTime: parsed.prepTime || null,
       servings: parsed.servings || 2,
-      thumbnailUrl,
+      thumbnailUrl: stableThumbnailUrl,
       ingredients: parsed.ingredients || [],
       steps: parsed.steps || [],
     },

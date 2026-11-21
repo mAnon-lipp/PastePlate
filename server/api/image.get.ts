@@ -1,5 +1,22 @@
 const MAX_IMAGE_SIZE = 12 * 1024 * 1024
 
+const FALLBACK_SVG = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">
+  <rect width="800" height="450" fill="#f1ede4"/>
+  <circle cx="400" cy="205" r="58" fill="#ddd4c4"/>
+  <path d="M375 205a25 25 0 1 0 50 0 25 25 0 1 0-50 0" fill="#faf8f3"/>
+  <path d="M330 286c25-45 115-45 140 0" fill="none" stroke="#c2b69f" stroke-width="18" stroke-linecap="round"/>
+</svg>`
+
+function sendFallback(event: Parameters<typeof setResponseHeaders>[0]) {
+  setResponseHeaders(event, {
+    'Content-Type': 'image/svg+xml',
+    'Cache-Control': 'public, max-age=300, s-maxage=3600',
+    'X-Image-Fallback': 'true',
+  })
+  return FALLBACK_SVG
+}
+
 function isAllowedImageHost(hostname: string): boolean {
   const allowedHosts = [
     'cdninstagram.com',
@@ -33,7 +50,7 @@ export default defineEventHandler(async (event) => {
     (imageUrl.protocol !== 'https:' && imageUrl.protocol !== 'http:') ||
     !isAllowedImageHost(imageUrl.hostname.toLowerCase())
   ) {
-    throw createError({ statusCode: 400, statusMessage: 'Hôte image non autorisé.' })
+    return sendFallback(event)
   }
 
   const response = await fetch(imageUrl, {
@@ -54,18 +71,12 @@ export default defineEventHandler(async (event) => {
   })
 
   if (!response || !response.ok) {
-    throw createError({
-      statusCode: 502,
-      statusMessage: "Impossible de charger l'image source.",
-    })
+    return sendFallback(event)
   }
 
   const contentType = response.headers.get('content-type') || ''
   if (!contentType.startsWith('image/')) {
-    throw createError({
-      statusCode: 502,
-      statusMessage: "La source ne retourne pas une image.",
-    })
+    return sendFallback(event)
   }
 
   const contentLength = Number(response.headers.get('content-length') || 0)
