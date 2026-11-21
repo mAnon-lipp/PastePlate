@@ -41,8 +41,7 @@ async function refreshInstagramThumbnails(
   const candidates = recipes.filter(
     (recipe) =>
       recipe.platform !== 'tiktok' &&
-      recipe.thumbnailUrl &&
-      !recipe.thumbnailUrl.startsWith('data:image/')
+      recipe.sourceUrl
   )
 
   if (candidates.length === 0) return
@@ -93,8 +92,7 @@ async function refreshTikTokThumbnails(
   const candidates = recipes.filter(
     (recipe) =>
       recipe.platform === 'tiktok' &&
-      recipe.thumbnailUrl &&
-      !recipe.thumbnailUrl.startsWith('data:image/')
+      recipe.sourceUrl
   )
 
   if (candidates.length === 0) return
